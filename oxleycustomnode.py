@@ -27,16 +27,18 @@ from datetime import datetime, timedelta
 def get_latest_message(ws):
     latest_message = None
     try:
-        while True:  # Keep reading until buffer is empty
-            message = ws.recv()
-            latest_message = message  # ✅ Only keep the newest message
-    except WebSocketTimeoutException:
-        pass  # ✅ Don't treat timeout as an error, just return the latest frame
+        ws.settimeout(0.05)  # ✅ Reduce timeout to prevent blocking
+        while True:
+            try:
+                message = ws.recv()
+                latest_message = message  # ✅ Always store the latest message
+            except WebSocketTimeoutException:
+                break  # ✅ Exit loop when no new messages are available
     except Exception as e:
         print(f"⚠️ WebSocket error: {e}")
         if ws:
             ws.close()
-        return None
+        return None  # ✅ Prevent blocking by always returning something
     return latest_message
     
 
@@ -137,7 +139,7 @@ class OxleyWebsocketDownloadImageNode:
         return image_tensor
                 
     def download_image_ws(self, ws_url, node_id):
-        """Download image from WebSocket with optimized execution."""
+        """Download image from WebSocket without hanging ComfyUI."""
         ws = self.get_connection(ws_url, node_id)
         if ws is None:
             return (self.generate_placeholder_tensor("WebSocket failed"),)
@@ -145,33 +147,31 @@ class OxleyWebsocketDownloadImageNode:
         try:
             message = get_latest_message(ws)
             if message is None:
+                print(f"⚠️ No new message received from {ws_url}")
                 return (self.generate_placeholder_tensor("No image received"),)
     
             data = json.loads(message)
             if "image" not in data:
+                print(f"⚠️ No 'image' field in WebSocket response from {ws_url}")
                 return (self.generate_placeholder_tensor("No image data found"),)
     
-            # ✅ Skip redundant processing if the image hasn't changed
-            if hasattr(self, "last_image") and self.last_image == data["image"]:
-                return (self.last_tensor,)  # ✅ Reuse last tensor if unchanged
-    
-            # ✅ Convert only if new
-            image_data = base64.b64decode(data["image"].split(",")[1])
-            image = Image.open(BytesIO(image_data)).convert("RGB")
-            image_array = np.array(image).astype(np.float32) / 255.0
-            image_tensor = torch.from_numpy(image_array)[None,]
-    
-            # ✅ Store last image and tensor
-            self.last_image = data["image"]
-            self.last_tensor = image_tensor
-    
-            return (image_tensor,)
+            # ✅ Ensure image decoding does not hang
+            try:
+                image_data = base64.b64decode(data["image"].split(",")[1])
+                image = Image.open(BytesIO(image_data)).convert("RGB")
+                image_array = np.array(image).astype(np.float32) / 255.0
+                image_tensor = torch.from_numpy(image_array)[None,]
+                return (image_tensor,)
+            except Exception as e:
+                print(f"⚠️ Error decoding image: {e}")
+                return (self.generate_placeholder_tensor("Image decoding failed"),)
     
         except JSONDecodeError:
-            return (self.generate_placeholder_tensor("Invalid JSON"),)
+            print(f"❌ Invalid JSON received from {ws_url}: {message}")
+            return (self.generate_placeholder_tensor("Invalid JSON received"),)
         except Exception as e:
-            return (self.generate_placeholder_tensor(f"Error: {e}"),)
-
+            print(f"❌ Unexpected error: {e}")
+            return (self.generate_placeholder_tensor(f"Error processing image: {e}"),)
 
     @classmethod
     def IS_CHANGED(cls, ws_url, node_id):
