@@ -135,50 +135,42 @@ class OxleyWebsocketDownloadImageNode:
 
         OxleyWebsocketDownloadImageNode.placeholder_tensor = image_tensor  # Cache
         return image_tensor
-            
+                
     def download_image_ws(self, ws_url, node_id):
-        """Download image from WebSocket."""
+        """Download image from WebSocket with optimized execution."""
         ws = self.get_connection(ws_url, node_id)
-    
         if ws is None:
-            print(f"❌ WebSocket connection failed for: {ws_url}")
-            return (self.generate_placeholder_tensor("WebSocket connection failed"),)
+            return (self.generate_placeholder_tensor("WebSocket failed"),)
     
         try:
-            ws.settimeout(0.1)  # ✅ Only call if `ws` is valid
             message = get_latest_message(ws)
-    
             if message is None:
-                print(f"⚠️ No new message received from {ws_url}")
-                return (self.generate_placeholder_tensor("No message received"),)
+                return (self.generate_placeholder_tensor("No image received"),)
     
-        except Exception as e:
-            print(f"❌ Error retrieving WebSocket message: {e}")
-            return (self.generate_placeholder_tensor(f"Error: {e}"),)
-    
-        try:
             data = json.loads(message)
             if "image" not in data:
-                print(f"⚠️ No 'image' field in WebSocket response from {ws_url}")
                 return (self.generate_placeholder_tensor("No image data found"),)
     
-            # ✅ Decode and process image
-            image_data = base64.b64decode(data["image"].split(",")[1])
-            image = Image.open(BytesIO(image_data))
-            image = image.convert("RGB")
-            image_array = np.array(image).astype(np.float32) / 255.0
-            image_tensor = torch.from_numpy(image_array)
-            image_tensor = image_tensor[None,]  # Add batch dimension
+            # ✅ Skip redundant processing if the image hasn't changed
+            if hasattr(self, "last_image") and self.last_image == data["image"]:
+                return (self.last_tensor,)  # ✅ Reuse last tensor if unchanged
     
-            print(f"✅ Successfully received and processed image from {ws_url}")
+            # ✅ Convert only if new
+            image_data = base64.b64decode(data["image"].split(",")[1])
+            image = Image.open(BytesIO(image_data)).convert("RGB")
+            image_array = np.array(image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_array)[None,]
+    
+            # ✅ Store last image and tensor
+            self.last_image = data["image"]
+            self.last_tensor = image_tensor
+    
             return (image_tensor,)
     
         except JSONDecodeError:
-            print(f"❌ Invalid JSON received from {ws_url}: {message}")
-            return (self.generate_placeholder_tensor("Invalid JSON received"),)
+            return (self.generate_placeholder_tensor("Invalid JSON"),)
         except Exception as e:
-            print(f"❌ Error processing image data: {e}")
-            return (self.generate_placeholder_tensor(f"Error processing image: {e}"),)
+            return (self.generate_placeholder_tensor(f"Error: {e}"),)
 
 
     @classmethod
