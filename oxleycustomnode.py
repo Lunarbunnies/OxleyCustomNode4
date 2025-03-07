@@ -76,26 +76,33 @@ class OxleyWebsocketDownloadImageNode:
 
     @classmethod
     def get_connection(cls, ws_url, node_id):
-        """Get an existing WebSocket connection or create a new one, checking for validity."""
+        """Get an existing WebSocket connection or create a new one."""
         connection_key = f"{ws_url}_{node_id}"
-
+    
         try:
-            # If connection exists, check if it's still open
+            # ✅ If connection exists and is valid, return it
             if connection_key in cls.ws_connections:
                 ws = cls.ws_connections[connection_key]
-                if ws.sock and ws.sock.connected:
+                if ws and ws.sock and ws.sock.connected:  # ✅ Ensures valid connection
                     return ws
                 else:
-                    del cls.ws_connections[connection_key]  # Remove bad connection
-
-            # Create a new connection
+                    print(f"⚠️ Closing stale WebSocket connection for {ws_url}")
+                    del cls.ws_connections[connection_key]  # Remove stale connection
+    
+            # ✅ Create a new connection
+            print(f"🔄 Connecting to WebSocket: {ws_url}")
             new_connection = websocket.create_connection(ws_url, timeout=5)
-            cls.ws_connections[connection_key] = new_connection
-            return new_connection
-
+    
+            if new_connection and new_connection.sock and new_connection.sock.connected:
+                cls.ws_connections[connection_key] = new_connection
+                return new_connection
+            else:
+                print(f"❌ WebSocket connection to {ws_url} failed.")
+                return None  # ✅ Explicitly return None if connection fails
+    
         except Exception as e:
-            print(f"WebSocket connection error ({ws_url}): {e}")
-            return None  # Return None instead of crashing
+            print(f"❌ WebSocket connection error ({ws_url}): {e}")
+            return None  # ✅ Ensures method never crashes
 
     @classmethod
     def close_connection(cls, ws_url, node_id):
@@ -133,18 +140,16 @@ class OxleyWebsocketDownloadImageNode:
 
         OxleyWebsocketDownloadImageNode.placeholder_tensor = image_tensor  # Cache
         return image_tensor
-    
+        
     def download_image_ws(self, ws_url, node_id):
-        # Initialize or get an existing WebSocket client connection
+        # ✅ Ensure WebSocket connection is valid before proceeding
         ws = self.get_connection(ws_url, node_id)
-    
-        # ✅ Check if WebSocket connection was successful BEFORE calling `settimeout()`
         if ws is None:
             print(f"❌ WebSocket connection failed: {ws_url}")
             return (self.generate_placeholder_tensor("WebSocket connection failed"),)
     
         try:
-            ws.settimeout(0.1)  # ✅ Only call `settimeout()` if `ws` is not None
+            ws.settimeout(0.1)  # ✅ Only call `settimeout()` if `ws` is valid
             message = get_latest_message(ws)
     
             if message is None:
@@ -170,6 +175,7 @@ class OxleyWebsocketDownloadImageNode:
             return (self.generate_placeholder_tensor("Invalid JSON received"),)
         except Exception as e:
             return (self.generate_placeholder_tensor(f"Error processing image: {e}"),)
+
 
     @classmethod
     def IS_CHANGED(cls, ws_url, node_id):
