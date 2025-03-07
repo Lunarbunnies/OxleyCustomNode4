@@ -133,18 +133,18 @@ class OxleyWebsocketDownloadImageNode:
 
         OxleyWebsocketDownloadImageNode.placeholder_tensor = image_tensor  # Cache
         return image_tensor
-
+    
     def download_image_ws(self, ws_url, node_id):
         # Initialize or get an existing WebSocket client connection
         ws = self.get_connection(ws_url, node_id)
     
-        # ✅ Check if WebSocket connection was successful
+        # ✅ Check if WebSocket connection was successful BEFORE calling `settimeout()`
         if ws is None:
-            print(f"❌ Failed to connect to WebSocket: {ws_url}")
+            print(f"❌ WebSocket connection failed: {ws_url}")
             return (self.generate_placeholder_tensor("WebSocket connection failed"),)
     
         try:
-            ws.settimeout(0.1)  # ✅ Only call settimeout() if ws is not None
+            ws.settimeout(0.1)  # ✅ Only call `settimeout()` if `ws` is not None
             message = get_latest_message(ws)
     
             if message is None:
