@@ -73,37 +73,32 @@ class OxleyWebsocketDownloadImageNode:
     placeholder_tensor = None  # Cache placeholder tensor
     ws_connections = {}  # Class-level dictionary to store WebSocket connections by unique key
     global_counter = 0  # Global counter
-
+    
     @classmethod
     def get_connection(cls, ws_url, node_id):
-        """Get or create a WebSocket connection, ensuring it's valid."""
+        """Get an existing WebSocket connection or create a new one, checking for validity."""
         connection_key = f"{ws_url}_{node_id}"
+        existing_connection = cls.ws_connections.get(connection_key)
+    
+        if existing_connection:
+            try:
+                existing_connection.settimeout(0.1)  # ✅ Validate WebSocket by attempting a receive
+                existing_connection.recv()
+                existing_connection.settimeout(None)  # Reset timeout after validation
+                return existing_connection
+            except websocket.WebSocketException:
+                print(f"⚠️ WebSocket error, reconnecting: {ws_url}")
+                existing_connection.close()
+                del cls.ws_connections[connection_key]
     
         try:
-            # ✅ If an existing connection exists, check if it's valid
-            if connection_key in cls.ws_connections:
-                ws = cls.ws_connections[connection_key]
-                if ws and ws.sock and ws.sock.connected:
-                    return ws  # ✅ Return the valid WebSocket
-    
-                print(f"⚠️ Stale WebSocket detected for {ws_url}, closing...")
-                del cls.ws_connections[connection_key]  # Remove invalid connection
-    
-            # ✅ Create a new connection
-            print(f"🔄 Attempting to connect to WebSocket: {ws_url}")
-            new_connection = websocket.create_connection(ws_url, timeout=5)
-    
-            if new_connection and new_connection.sock and new_connection.sock.connected:
-                cls.ws_connections[connection_key] = new_connection
-                print(f"✅ Successfully connected to WebSocket: {ws_url}")
-                return new_connection
-    
-            print(f"❌ WebSocket connection to {ws_url} failed unexpectedly.")
-            return None  # Explicitly return None if connection fails
-    
+            print(f"🔄 Creating new WebSocket connection to {ws_url}")
+            new_connection = websocket.create_connection(ws_url)
+            cls.ws_connections[connection_key] = new_connection
+            return new_connection
         except Exception as e:
-            print(f"❌ WebSocket connection error ({ws_url}): {e}")
-            return None  # Ensures method does not crash
+            print(f"❌ Failed to create WebSocket connection: {e}")
+            return None  # Explicitly return None on failure
 
 
     @classmethod
@@ -145,16 +140,14 @@ class OxleyWebsocketDownloadImageNode:
             
     def download_image_ws(self, ws_url, node_id):
         """Download image from WebSocket."""
-        # ✅ Ensure WebSocket connection is valid before proceeding
         ws = self.get_connection(ws_url, node_id)
-        
+    
         if ws is None:
             print(f"❌ WebSocket connection failed for: {ws_url}")
             return (self.generate_placeholder_tensor("WebSocket connection failed"),)
     
         try:
-            print(f"📡 Requesting latest image from WebSocket: {ws_url}")
-            ws.settimeout(0.1)  # ✅ Only call `settimeout()` if `ws` is valid
+            ws.settimeout(0.1)  # ✅ Only call if `ws` is valid
             message = get_latest_message(ws)
     
             if message is None:
@@ -171,13 +164,14 @@ class OxleyWebsocketDownloadImageNode:
                 print(f"⚠️ No 'image' field in WebSocket response from {ws_url}")
                 return (self.generate_placeholder_tensor("No image data found"),)
     
+            # ✅ Decode and process image
             image_data = base64.b64decode(data["image"].split(",")[1])
             image = Image.open(BytesIO(image_data))
             image = image.convert("RGB")
             image_array = np.array(image).astype(np.float32) / 255.0
             image_tensor = torch.from_numpy(image_array)
             image_tensor = image_tensor[None,]  # Add batch dimension
-            
+    
             print(f"✅ Successfully received and processed image from {ws_url}")
             return (image_tensor,)
     
