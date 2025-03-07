@@ -173,67 +173,66 @@ class OxleyWebsocketDownloadImageNode:
         
 
 class OxleyWebsocketPushImageNode:
-    ws_connections = {}  # Class-level dictionary to store WebSocket connections by URL
+    ws_connections = {}  # Store WebSocket connections
 
     @classmethod
     def get_connection(cls, ws_url):
-        """Get an existing WebSocket connection or create a new one."""
+        """Ensure WebSocket connection is active"""
         try:
             if ws_url not in cls.ws_connections or not cls.ws_connections[ws_url].connected:
                 cls.ws_connections[ws_url] = websocket.create_connection(ws_url)
         except Exception as e:
             print(f"Error connecting to WebSocket {ws_url}: {e}")
-            # logging.error(f"Error connecting to WebSocket {ws_url}: {e}")
-            # Here, decide whether to retry, raise an exception, or handle the error differently.
             raise
         return cls.ws_connections[ws_url]
 
     @classmethod
     def close_connection(cls, ws_url):
-        """Close and remove a WebSocket connection."""
+        """Close WebSocket connection"""
         if ws_url in cls.ws_connections:
             cls.ws_connections[ws_url].close()
             del cls.ws_connections[ws_url]
-            
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image_in": ("IMAGE", {}),  # Input image
-                "ws_url": ("STRING", {})    # WebSocket URL to push the image to
+                "image_in": ("IMAGE", {}),
+                "ws_url": ("STRING", {})
             },
         }
 
-    RETURN_TYPES = ("STRING",)  # Possible return type for confirmation/message
+    RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("status_message",)
-    FUNCTION = "push_image_ws"
-    CATEGORY = "oxley"
+    FUNCTION = "push_image_ws"  # ✅ This must match the method name
 
-def push_image_ws(self, image_in, ws_url, format="JPEG"):
-    """Push an image tensor to a WebSocket."""
-    image_np = image_in.squeeze().cpu().numpy()
-    
-    # Convert to correct shape
-    if image_np.ndim == 3 and image_np.shape[0] in {1, 3}:
-        image_np = image_np.transpose(1, 2, 0)
+    def push_image_ws(self, image_in, ws_url, format="JPEG"):
+        """Push an image tensor to a WebSocket."""
+        try:
+            # Ensure WebSocket connection
+            ws = self.get_connection(ws_url)
 
-    image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
-    img = Image.fromarray(image_np)
+            # Convert tensor image to base64
+            image_np = image_in.squeeze().cpu().numpy()
+            if image_np.ndim == 3 and image_np.shape[0] in {1, 3}:
+                image_np = image_np.transpose(1, 2, 0)
 
-    buffer = BytesIO()
-    img.save(buffer, format=format)  # Allow format selection
-    base64_bytes = base64.b64encode(buffer.getvalue())
-    base64_string = base64_bytes.decode('utf-8')
+            image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
+            img = Image.fromarray(image_np)
 
-    try:
-        ws = self.get_connection(ws_url)
-        message = json.dumps({"image": base64_string})
-        ws.send(message)
-        return ("Image sent successfully",)
-    except Exception as e:
-        print(f"Error sending image: {e}")
-        self.close_connection(ws_url)
-        return (f"Failed to send image: {e}",)
+            buffer = BytesIO()
+            img.save(buffer, format=format)  # Allow format selection
+            base64_string = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+            # Send image
+            ws.send(json.dumps({"image": base64_string}))
+
+            return ("Image sent successfully",)
+        except Exception as e:
+            print(f"Error sending image to WebSocket: {e}")
+            self.close_connection(ws_url)
+            return (f"Failed to send image: {e}",)
+
 
 
 class OxleyWebsocketReceiveJsonNode:
