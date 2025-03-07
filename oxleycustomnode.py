@@ -27,18 +27,16 @@ from datetime import datetime, timedelta
 def get_latest_message(ws):
     latest_message = None
     try:
-        while True:
-            try:
-                ws.settimeout(0.1)  # Reduce blocking time
-                message = ws.recv()
-                latest_message = message  # Update to the most recent message
-            except WebSocketTimeoutException:
-                break  # Exit loop if no more messages are available
+        while True:  # Keep reading until buffer is empty
+            message = ws.recv()
+            latest_message = message  # ✅ Only keep the newest message
+    except WebSocketTimeoutException:
+        pass  # ✅ Don't treat timeout as an error, just return the latest frame
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        print(f"⚠️ WebSocket error: {e}")
         if ws:
             ws.close()
-        return None  # Return None instead of -1
+        return None
     return latest_message
     
 
