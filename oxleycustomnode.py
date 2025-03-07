@@ -137,23 +137,27 @@ class OxleyWebsocketDownloadImageNode:
     def download_image_ws(self, ws_url, node_id):
         # Initialize or get an existing WebSocket client connection
         ws = self.get_connection(ws_url, node_id)
-
-        ws.settimeout(0.1)  # Reduced timeout to 0.1 second
-
+    
+        # ✅ Check if WebSocket connection was successful
+        if ws is None:
+            print(f"❌ Failed to connect to WebSocket: {ws_url}")
+            return (self.generate_placeholder_tensor("WebSocket connection failed"),)
+    
         try:
+            ws.settimeout(0.1)  # ✅ Only call settimeout() if ws is not None
             message = get_latest_message(ws)
+    
             if message is None:
                 return (self.generate_placeholder_tensor("No message received"),)
-            elif message == -1:
-                return (self.generate_placeholder_tensor("Error in WebSocket communication"),)
+    
         except Exception as e:
             return (self.generate_placeholder_tensor(f"Error: {e}"),)
-
+    
         try:
             data = json.loads(message)
             if "image" not in data:
                 return (self.generate_placeholder_tensor("No image data found"),)
-
+    
             image_data = base64.b64decode(data["image"].split(",")[1])
             image = Image.open(BytesIO(image_data))
             image = image.convert("RGB")
@@ -161,6 +165,7 @@ class OxleyWebsocketDownloadImageNode:
             image_tensor = torch.from_numpy(image_array)
             image_tensor = image_tensor[None,]
             return (image_tensor,)
+    
         except JSONDecodeError:
             return (self.generate_placeholder_tensor("Invalid JSON received"),)
         except Exception as e:
