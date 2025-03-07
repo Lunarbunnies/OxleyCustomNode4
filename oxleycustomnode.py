@@ -29,15 +29,16 @@ def get_latest_message(ws):
     try:
         while True:
             try:
+                ws.settimeout(0.1)  # Reduce blocking time
                 message = ws.recv()
                 latest_message = message  # Update to the most recent message
             except WebSocketTimeoutException:
                 break  # Exit loop if no more messages are available
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"WebSocket error: {e}")
         if ws:
             ws.close()
-        return -1  # Return -1 on other exceptions, indicating an error
+        return None  # Return None instead of -1
     return latest_message
     
 
@@ -69,6 +70,7 @@ class OxleyAlternatorNode:
 
 
 class OxleyWebsocketDownloadImageNode:
+    placeholder_tensor = None  # Cache placeholder tensor
     ws_connections = {}  # Class-level dictionary to store WebSocket connections by unique key
     global_counter = 0  # Global counter
 
@@ -76,28 +78,33 @@ class OxleyWebsocketDownloadImageNode:
     def get_connection(cls, ws_url, node_id):
         """Get an existing WebSocket connection or create a new one, checking for validity."""
         connection_key = f"{ws_url}_{node_id}"
-        existing_connection = cls.ws_connections.get(connection_key)
-        if existing_connection:
-            try:
-                existing_connection.settimeout(0.1)  # Reduced timeout to 0.1 second
-                existing_connection.recv()
-                existing_connection.settimeout(None)  # Reset timeout as needed
-                return existing_connection
-            except websocket.WebSocketException:
-                existing_connection.close()
-                del cls.ws_connections[connection_key]
 
-        new_connection = websocket.create_connection(ws_url)
-        cls.ws_connections[connection_key] = new_connection
-        return new_connection
+        try:
+            # If connection exists, check if it's still open
+            if connection_key in cls.ws_connections:
+                ws = cls.ws_connections[connection_key]
+                if ws.sock and ws.sock.connected:
+                    return ws
+                else:
+                    del cls.ws_connections[connection_key]  # Remove bad connection
+
+            # Create a new connection
+            new_connection = websocket.create_connection(ws_url, timeout=5)
+            cls.ws_connections[connection_key] = new_connection
+            return new_connection
+
+        except Exception as e:
+            print(f"WebSocket connection error ({ws_url}): {e}")
+            return None  # Return None instead of crashing
 
     @classmethod
     def close_connection(cls, ws_url, node_id):
         """Close and remove a WebSocket connection."""
         connection_key = f"{ws_url}_{node_id}"
         if connection_key in cls.ws_connections:
-            if cls.ws_connections[connection_key].open:
-                cls.ws_connections[connection_key].close()
+            ws = cls.ws_connections[connection_key]
+            if ws.sock and ws.sock.connected:
+                ws.close()
             del cls.ws_connections[connection_key]
 
     @classmethod
@@ -113,13 +120,18 @@ class OxleyWebsocketDownloadImageNode:
 
     @staticmethod
     def generate_placeholder_tensor(message="No Data"):
-        """Generate a placeholder image with a custom message."""
+        """Generate a cached placeholder image tensor with a custom message."""
+        if OxleyWebsocketDownloadImageNode.placeholder_tensor is not None:
+            return OxleyWebsocketDownloadImageNode.placeholder_tensor  # Reuse cached tensor
+
         image = Image.new('RGB', (320, 240), color=(73, 109, 137))
         draw = ImageDraw.Draw(image)
-        draw.text((0, 120), message, fill=(255, 255, 255))
+        draw.text((10, 120), message, fill=(255, 255, 255))
         image_array = np.array(image).astype(np.float32) / 255.0
         image_tensor = torch.from_numpy(image_array)
         image_tensor = image_tensor[None,]  # Add batch dimension
+
+        OxleyWebsocketDownloadImageNode.placeholder_tensor = image_tensor  # Cache
         return image_tensor
 
     def download_image_ws(self, ws_url, node_id):
@@ -197,56 +209,32 @@ class OxleyWebsocketPushImageNode:
     FUNCTION = "push_image_ws"
     CATEGORY = "oxley"
 
-    def push_image_ws(self, image_in, ws_url):
-        # Assuming image_in is a PyTorch tensor with shape [1, C, H, W] or similar
-        
-        # Remove unnecessary dimensions and ensure the tensor is CPU-bound
-        image_np = image_in.squeeze().cpu().numpy()
-        
-        # If your tensor has a shape [C, H, W] (common in PyTorch), convert it to [H, W, C]
-        if image_np.ndim == 3 and image_np.shape[0] in {1, 3}:
-            # This assumes a 3-channel (RGB) or 1-channel (grayscale) image.
-            # Adjust the transpose for different formats if necessary.
-            image_np = image_np.transpose(1, 2, 0)
-        
-        # The tensor should now be in a shape compatible with PIL (H, W, C)
-        # For grayscale images (with no color channel), this step isn't necessary.
-        
-        # Convert numpy array to uint8 if not already
-        image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
-        
-        try:
-            img = Image.fromarray(image_np)
-        except TypeError as e:
-            raise ValueError(f"Failed to convert array to image: {e}")
-
-        buffer = BytesIO()
-        img.save(buffer, format="JPEG")
-        jpeg_bytes = buffer.getvalue()
-        base64_bytes = base64.b64encode(jpeg_bytes)
-        base64_string = base64_bytes.decode('utf-8')
-
-        try:
-            # Initialize or get an existing WebSocket client connection
-            ws = self.get_connection(ws_url)
+def push_image_ws(self, image_in, ws_url, format="JPEG"):
+    """Push an image tensor to a WebSocket."""
+    image_np = image_in.squeeze().cpu().numpy()
     
-            # Prepare the message
-            message = json.dumps({"image": base64_string})
-    
-            # Send the message
-            ws.send(message)
-            
-            return ("Image sent successfully",)
-        except ssl.SSLError as ssl_error:
-            print(f"SSL error when sending image to {ws_url}: {ssl_error}")
-            self.close_connection(ws_url)  # Close the problematic connection
-            # Handle the error further or retry as needed.
-        except Exception as ex:
-            print(f"An error occurred when sending image to {ws_url}: {ex}")
-            self.close_connection(ws_url)  # Close the problematic connection
-            # Decide how to handle unexpected errors: retry, raise, etc.
-        
+    # Convert to correct shape
+    if image_np.ndim == 3 and image_np.shape[0] in {1, 3}:
+        image_np = image_np.transpose(1, 2, 0)
+
+    image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
+    img = Image.fromarray(image_np)
+
+    buffer = BytesIO()
+    img.save(buffer, format=format)  # Allow format selection
+    base64_bytes = base64.b64encode(buffer.getvalue())
+    base64_string = base64_bytes.decode('utf-8')
+
+    try:
+        ws = self.get_connection(ws_url)
+        message = json.dumps({"image": base64_string})
+        ws.send(message)
         return ("Image sent successfully",)
+    except Exception as e:
+        print(f"Error sending image: {e}")
+        self.close_connection(ws_url)
+        return (f"Failed to send image: {e}",)
+
 
 class OxleyWebsocketReceiveJsonNode:
     ws_connections = {}
